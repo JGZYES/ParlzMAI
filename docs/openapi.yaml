@@ -1,0 +1,51 @@
+openapi: 3.0.0
+info:
+  title: ParlzMAI API
+  version: 1.0.0
+  description: pmai HTTP 服务（--serve，需 -DBUILD_HTTP=ON）。MoE 推理生成。
+servers:
+  - url: http://127.0.0.1:11434
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      responses:
+        '200': { description: ok }
+  /api/models:
+    get:
+      summary: 已加载模型信息
+      responses:
+        '200':
+          description: JSON 模型信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model: { type: string }
+                  params: { type: integer }
+                  arch: { type: string }
+                  n_experts: { type: integer }
+  /api/generate:
+    post:
+      summary: 生成（SSE 流式）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt: { type: string, example: 'ROMEO:' }
+                options:
+                  type: object
+                  properties:
+                    max_tokens: { type: integer, example: 60 }
+                    temperature: { type: number, example: 0.8 }
+                    top_k: { type: integer, example: 40 }
+      responses:
+        '200':
+          description: SSE text/event-stream，每事件 data: {"response":"..."}
+          content:
+            text/event-stream:
+              schema: { type: string }

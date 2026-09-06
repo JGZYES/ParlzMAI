@@ -1,0 +1,22 @@
+# 构建/产物
+build/
+build-asan/
+dist/
+output/
+
+# WSL 发行版镜像（大）
+wsl/
+
+# 模型文件（大，可重新训练/下载）
+models/*.pap
+models/*.gguf
+!models/.gitkeep
+
+# 缓存/二进制
+*.o
+*.a
+*.so
+*.core
+*.papcache
+__pycache__/
+*.pyc

@@ -1,0 +1,11 @@
+# pmai 示例配置 config.yaml（--config 加载，命令行参数优先）
+server:
+  host: 0.0.0.0
+  port: 11434
+
+model: models/moe-0.1b-fp16.pap   # 也支持 .gguf
+
+inference:
+  n_tokens: 100
+  temperature: 0.8
+  top_k: 40
