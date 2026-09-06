@@ -89,9 +89,20 @@ ctest --test-dir build                 # 单元测试
 /opt/pap-venv/bin/python platform/verify.py  --pap models/_smoke.pap    # [MATCH] YES
 # llama 架构：C vs torch 贪心（合成 MoE GGUF round-trip）
 /opt/pap-venv/bin/python platform/verify_llama.py                       # [MATCH] YES
-# llama BPE 分词器 vs llama-cpp-python（真实 Qwen2-MoE 词表）
-/opt/pap-venv/bin/python -c "..."        # 逐 token MATCH
+# llama BPE 分词器 vs llama-cpp-python（真实 Qwen2-MoE 词表）+ C 端对拍
+/opt/pap-venv/bin/python -c "..."                    # 逐 token MATCH
+./output/test_llmtok models/qwen25moe.gguf 'Hello'   # C 端分词器：与参考一致
 ```
+
+## Git 仓库
+- 代码已本地提交（59 文件，已排除 `wsl/`、`models/*.pap|*.gguf`、`output/`、`build/` 等大件/产物）。
+- 远端已配置：`origin=https://github.com/JGZYES/ParlzMAI.git`、`parlz=https://git.parlz.com/JGZ_YES/ParlzMAI.git`。
+- ⚠️ **推送需认证**：本机无 GitHub PAT / SSH key，`git push` 被要求登录。配置后：
+  ```bash
+  git push -u origin main
+  git push -u parlz main
+  ```
+  或提供 token：`git push https://<TOKEN>@github.com/JGZYES/ParlzMAI.git main`。
 
 ---
 
