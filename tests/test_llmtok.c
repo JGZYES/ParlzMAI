@@ -35,6 +35,16 @@ static void dq6k_ref(const block_q6_K *x, float *y) {
         y+=128; ql+=64; qh+=32; sc+=8;
     }
 }
+/* Q4_0 逐字参考（llama.cpp dequantize_row_q4_0） */
+typedef struct { ggml_half d; uint8_t qs[16]; } block_q4_0;
+static void dq4_0_ref(const block_q4_0 *x, float *y) {
+    const float d = f16f(x->d);
+    for (int j = 0; j < 16; j++) {
+        int x0 = (x->qs[j] & 0x0F) - 8;
+        int x1 = (x->qs[j] >> 4) - 8;
+        y[j] = x0 * d; y[j + 16] = x1 * d;
+    }
+}
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "用法: test_llmtok <model.gguf> [text...]\n"); return 1; }
@@ -64,25 +74,32 @@ int main(int argc, char **argv) {
 
     /* 反量化：第一个 Q4_K/Q6_K 张量，Q6_K 附逐字参考对比（公式一致性验证） */
     for (uint64_t ti = 0; ti < g.tensor_count; ti++) {
-        if (g.ggml_type[ti] == 12 || g.ggml_type[ti] == 14) {
+        if (g.ggml_type[ti] == 2 || g.ggml_type[ti] == 12 || g.ggml_type[ti] == 14) {  /* Q4_0 / Q4_K / Q6_K */
             uint64_t nn = 1;
             for (uint32_t d = 0; d < g.n_dims[ti]; d++) nn *= g.dims[ti][d];
+            fprintf(stderr, "[dbg] %s type=%u ndims=%u ne0=%llu ne1=%llu total=%llu\n",
+                    g.tensor_name[ti], g.ggml_type[ti], (unsigned)g.n_dims[ti],
+                    (unsigned long long)g.dims[ti][0],
+                    (unsigned long long)(g.n_dims[ti] > 1 ? g.dims[ti][1] : 1),
+                    (unsigned long long)nn);
             float *fv = malloc((size_t)nn * sizeof(float));
             if (gguf_tensor_to_f32(&g, g.tensor_name[ti], fv) > 0) {
-                int nan = 0; float mn = 1e30f, mx = -1e30f;
+                int nan = 0; float mn = 1e30f, mx = -1e30f; int firstnan = -1;
                 for (uint64_t j = 0; j < nn && j < 4096; j++) {
-                    if (fv[j] != fv[j]) nan++;
+                    if (fv[j] != fv[j]) { nan++; if (firstnan < 0) firstnan = (int)j; }
                     if (fv[j] < mn) mn = fv[j]; if (fv[j] > mx) mx = fv[j];
                 }
-                fprintf(stderr, "[dequant] %s (%s) NaN=%d range=[%.3f, %.3f]\n",
-                        g.tensor_name[ti], type_name_c(g.ggml_type[ti]), nan, mn, mx);
-                if (g.ggml_type[ti] == 14) {  /* Q6_K 参考对比（首位差异=0 表示与 llama.cpp 一致） */
+                fprintf(stderr, "[dequant] NaN=%d firstnan=%d range=[%.3f, %.3f] 前6: %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                        nan, firstnan, mn, mx, fv[0], fv[1], fv[2], fv[3], fv[4], fv[5]);
+                if (g.ggml_type[ti] == 2) {  /* Q4_0 逐字参考对比块0 与 块16 */
                     const unsigned char *tp = g.data + g.data_offset + (size_t)g.offset[ti];
-                    float refrow[1536];
-                    for (int blk = 0; blk < 6; blk++) dq6k_ref((const block_q6_K *)(tp + blk*210), refrow + blk*256);
-                    int diff = -1;
-                    for (int j = 0; j < 1536; j++) if (fabsf(refrow[j] - fv[j]) > 0.01f) { diff = j; break; }
-                    fprintf(stderr, "[ref] Q6_K vs llama.cpp 逐字参考: 首个差异@%d (0=公式一致)\n", diff);
+                    float ref0[32], ref1[32];
+                    dq4_0_ref((const block_q4_0 *)(tp), ref0);
+                    dq4_0_ref((const block_q4_0 *)(tp + 16*18), ref1);
+                    int d0 = -1, d1 = -1;
+                    for (int j = 0; j < 32; j++) if (fabsf(ref0[j] - fv[j]) > 0.01f) { d0 = j; break; }
+                    for (int j = 0; j < 32; j++) if (fabsf(ref1[j] - fv[16*32 + j]) > 0.01f) { d1 = j; break; }
+                    fprintf(stderr, "[ref] 块0差异@%d 块16差异@%d (0=与llama.cpp一致)\n", d0, d1);
                 }
             }
             free(fv);

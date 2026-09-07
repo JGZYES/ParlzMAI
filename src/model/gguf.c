@@ -122,19 +122,23 @@ static void dequant_block(uint32_t t, const unsigned char *p, float *out) {
             for (i = 0; i < 16; i++) {
                 int lo = q[i] & 0x0F;
                 int hi = (q[i] >> 4) & 0x0F;
-                out[i * 2 + 0] = (float)(lo - 8) * d;
-                out[i * 2 + 1] = (float)(hi - 8) * d;
+                out[i]         = (float)(lo - 8) * d;   /* 低 nibble -> 0..15 */
+                out[i + 16]    = (float)(hi - 8) * d;   /* 高 nibble -> 16..31 */
             }
             break;
         }
         case GGML_Q5_0: {
             float d = fp16_to_f32(*(const uint16_t *)p);
             const unsigned char *ql = p + 2;
-            const unsigned char *qh = p + 2 + 16;   /* 4 字节，bit w 对应权重 w 的高位 */
-            for (int w = 0; w < 32; w++) {
-                int low = (w & 1) ? (ql[w / 2] >> 4) & 0x0F : ql[w / 2] & 0x0F;
-                int high = (qh[w / 8] >> (w % 8)) & 1;
-                out[w] = (float)(low + (high << 4) - 16) * d;
+            const unsigned char *qh = p + 2 + 16;
+            for (i = 0; i < 16; i++) {
+                int low = ql[i] & 0x0F;
+                int high = (ql[i] >> 4) & 0x0F;
+                int s0 = (qh[i * 2 / 2] >> 0) & 0x01;             /* bit of weight 2i? 直接按位 */
+                int s0b = (qh[i] & 0x01) << 4;
+                int s1b = (qh[i] & 0x08) << 2;
+                out[i]      = (float)(low + s0b + 16 - 32) * d;   /* +16, -32 -> 中心化 */
+                out[i + 16] = (float)(high + s1b + 16 - 32) * d;
             }
             break;
         }
@@ -143,10 +147,13 @@ static void dequant_block(uint32_t t, const unsigned char *p, float *out) {
             float m = fp16_to_f32(*(const uint16_t *)(p + 2));
             const unsigned char *ql = p + 4;
             const unsigned char *qh = p + 4 + 16;
-            for (int w = 0; w < 32; w++) {
-                int low = (w & 1) ? (ql[w / 2] >> 4) & 0x0F : ql[w / 2] & 0x0F;
-                int high = (qh[w / 8] >> (w % 8)) & 1;
-                out[w] = (float)(low + (high << 4)) * d + m;
+            for (i = 0; i < 16; i++) {
+                int low = ql[i] & 0x0F;
+                int high = (ql[i] >> 4) & 0x0F;
+                int s0b = (qh[i] & 0x01) << 4;
+                int s1b = (qh[i] & 0x08) << 2;
+                out[i]      = (float)(low + s0b) * d + m;
+                out[i + 16] = (float)(high + s1b) * d + m;
             }
             break;
         }
