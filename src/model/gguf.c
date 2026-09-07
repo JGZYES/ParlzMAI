@@ -446,7 +446,8 @@ int gguf_open(Gguf *g, const char *path) {
             g->dims[i][d] = rd_len(g->version, buf, &off); \
         } \
         g->ggml_type[i] = rd_u32(buf + off); off += 4; \
-        g->offset[i] = rd_len(g->version, buf, &off); \
+        /* 张量 offset 在 GGUF v1/v2/v3 里都是 u64（8 字节），与版本无关 */ \
+        g->offset[i] = rd_u64(buf + off); off += 8; \
     }
 
     if (meta_first) { READ_METADATA(); READ_TENSORS(); }
