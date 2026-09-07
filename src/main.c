@@ -52,6 +52,27 @@ static int is_llama_gguf(const char *path) {
     return r;
 }
 
+/* 读取 GGUF 的 general.architecture（如 llama / qwen2），未读到返回 0 */
+static int gguf_arch(const char *path, char *buf, int cap) {
+    if (cap <= 0) return 0;
+    buf[0] = '\0';
+    Gguf g;
+    if (gguf_open(&g, path) != 0) return 0;
+    int r = gguf_meta_string(&g, "general.architecture", buf, (size_t)cap);
+    gguf_close(&g);
+    return r;
+}
+
+/* 是否为 .pap 导出的 GGUF（含 pap.vocab_size 元数据） */
+static int is_pap_gguf(const char *path) {
+    Gguf g;
+    if (gguf_open(&g, path) != 0) return 0;
+    uint32_t v = 0;
+    int r = gguf_meta_u32(&g, "pap.vocab_size", &v);
+    gguf_close(&g);
+    return r;
+}
+
 /* llama：编码提示（开头补 BOS）→ 生成 → 解码输出到 stdout */
 static void llama_emit(LlamaModel *m, const char *prompt, int n_new, float temp, int top_k) {
     int ids[512];
@@ -219,6 +240,15 @@ int main(int argc, char **argv) {
         }
         llama_free(&lm);
         return 0;
+    }
+
+    /* 非 llama、非 .pap 的 GGUF（如 qwen/gemma 等架构）暂不支持：给出清晰提示 */
+    if (has_gguf_magic(model) && !is_pap_gguf(model)) {
+        char arch[64] = "";
+        gguf_arch(model, arch, sizeof(arch));
+        MO_LOGE("GGUF 架构 '%s' 暂未支持：目前仅支持 llama 家族(llama/mistral/TinyLlama) 与 .pap 导出的 GGUF；qwen/gemma 等需实现对应分支。",
+                arch[0] ? arch : "未知");
+        return 2;
     }
 
     mo_rng_seed((unsigned)seed);
