@@ -455,7 +455,22 @@ int gguf_open(Gguf *g, const char *path) {
 #undef READ_METADATA
 #undef READ_TENSORS
 
-    g->data_offset = off;
+    /* GGUF 张量数据区起点需按对齐值向上取整：data_offset = align_up(off, alignment)。
+       对齐值取元数据 general.alignment（必须非 0 且为 2 的幂），否则用默认 32。
+       若不对齐，所有张量数据整体偏移若干字节 → 反量化读到垃圾 → 输出 <unk>。 */
+    {
+        uint64_t alignment = 32;
+        for (uint64_t i = 0; i < g->meta_count; i++) {
+            if (strcmp(g->meta_key[i], "general.alignment") == 0) {
+                alignment = g->meta_type[i] == GGVAL_UINT32
+                    ? (uint64_t)rd_u32(g->meta_off[i])
+                    : (uint64_t)rd_u64(g->meta_off[i]);
+                break;
+            }
+        }
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) alignment = 32;
+        g->data_offset = (off + alignment - 1) & ~(alignment - 1);
+    }
 
     return 0;
 }

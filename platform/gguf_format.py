@@ -278,7 +278,7 @@ def read_gguf_meta(path: str):
     else:
         md, off = _meta(off)
         tmeta, off = _tens(off)
-    return md, tmeta, version
+    return md, tmeta, version, off
 
 
 def _read_val(data, off, vt):

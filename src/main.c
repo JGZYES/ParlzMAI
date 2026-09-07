@@ -9,6 +9,7 @@
 #include "infer/sample.h"
 #include "model/gguf.h"
 #include "model/model.h"
+#include "model/llama.h"
 #ifdef MOE_HTTP
 #include "server/api.h"
 #endif
@@ -39,6 +40,34 @@ static int has_gguf_magic(const char *path) {
     int n = (int)fread(b, 1, 4, f);
     fclose(f);
     return (n == 4 && memcmp(b, m, 4) == 0);
+}
+
+/* 判断是否为 llama 架构 GGUF（存在 llama.block_count 元数据；.pap 导出的是 pap.* 前缀） */
+static int is_llama_gguf(const char *path) {
+    Gguf g;
+    if (gguf_open(&g, path) != 0) return 0;
+    uint32_t bc = 0;
+    int r = gguf_meta_u32(&g, "llama.block_count", &bc);
+    gguf_close(&g);
+    return r;
+}
+
+/* llama：编码提示（开头补 BOS）→ 生成 → 解码输出到 stdout */
+static void llama_emit(LlamaModel *m, const char *prompt, int n_new, float temp, int top_k) {
+    int ids[512];
+    int n = 0;
+    if (m->c.bos_id >= 0) ids[n++] = m->c.bos_id;
+    if (prompt && *prompt) {
+        int k = llama_tokenize(m, prompt, ids + n, 512 - n);
+        if (k > 0) n += k;
+    }
+    if (n == 0) ids[n++] = (m->c.bos_id >= 0) ? m->c.bos_id : 1;
+    int out[512];
+    int p = llama_generate(m, ids, n, n_new, temp, top_k, out);
+    char buf[4096];
+    int bl = llama_detokenize(m, out, p, buf, sizeof(buf));
+    fwrite(buf, 1, (size_t)(bl < 0 ? 0 : bl), stdout);
+    printf("\n");
 }
 
 static int arg_i(const char *s, int def) { return s ? atoi(s) : def; }
@@ -155,6 +184,42 @@ int main(int argc, char **argv) {
     }
 
     if (!model) { usage(); return 1; }
+
+    /* llama GGUF：由 pmai 直接跑（不再需要 pmai-llama） */
+    if (has_gguf_magic(model) && is_llama_gguf(model)) {
+        LlamaModel lm;
+        if (llama_load(&lm, model) != 0) { MO_LOGE("加载 llama 模型失败: %s", model); return 2; }
+        MO_LOGI("已加载 llama 模型: %s", model);
+        MO_LOGI("  config: vocab=%d layers=%d n_embd=%d n_head=%d(kv=%d) ffn=%d max_seq=%d",
+                lm.c.vocab, lm.c.n_layer, lm.c.n_embd, lm.c.n_head, lm.c.n_head_kv,
+                lm.c.ffn_dim, lm.c.max_seq);
+        MO_LOGI("  params: %lld", (long long)llama_param_count(&lm));
+        if (!prompt) prompt = "The";
+        if (serve) {
+#ifdef MOE_HTTP
+            MO_LOGE("llama 模型的 HTTP 服务暂未接入，请先使用单次/交互模式");
+#endif
+            llama_free(&lm);
+            return 2;
+        }
+        if (interactive) {
+            char line[4096];
+            for (;;) {
+                printf("\n>> ");
+                fflush(stdout);
+                if (!fgets(line, sizeof(line), stdin)) break;
+                size_t len = strlen(line);
+                while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+                if (!len) continue;
+                if (!strcmp(line, "exit") || !strcmp(line, "quit")) break;
+                llama_emit(&lm, line, n_tokens, temperature, top_k);
+            }
+        } else {
+            llama_emit(&lm, prompt, n_tokens, temperature, top_k);
+        }
+        llama_free(&lm);
+        return 0;
+    }
 
     mo_rng_seed((unsigned)seed);
 

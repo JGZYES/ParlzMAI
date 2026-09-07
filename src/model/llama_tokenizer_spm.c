@@ -156,15 +156,20 @@ int llmtok_spm_decode(const LlamaTokenizerSPM *t, const int *ids, int n, char *o
         int id = ids[i];
         if (id < 0 || id >= t->vocab_size) continue;
         const char *s = t->tokens[id];
-        if (strcmp(s, SPACE) == 0) { out[w++] = ' '; continue; }
         while (*s && w < max) {
             unsigned char c = (unsigned char)*s;
+            /* ▁ (U+2581, UTF-8 E2 96 81) -> 空格（token 内部也有，不仅仅是纯 ▁） */
+            if (c == 0xE2 && (unsigned char)s[1] == 0x96 && (unsigned char)s[2] == 0x81) {
+                out[w++] = ' '; s += 3; continue;
+            }
             int l = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 : 4));
-            /* 单字符 -> code -> byte */
-            char tmp[5]; memcpy(tmp, s, (size_t)l); tmp[l] = 0;
-            int cp; if (l == 1) cp = c; else if (l == 2) cp = ((c & 0x1F) << 6) | (s[1] & 0x3F); else cp = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-            int b = (cp >= 0 && cp < 512) ? code2byte[cp] : (cp & 0xFF);
-            out[w++] = (char)b;
+            if (l == 1) { out[w++] = (char)c; s += 1; continue; }
+            /* 多字节：byte-proxy（b2u 代理一个原始字节）-> 输出该字节；否则原样输出原 UTF-8 字节 */
+            int cp = (l == 2) ? (((c & 0x1F) << 6) | (s[1] & 0x3F))
+                  : (l == 3) ? (((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F))
+                  : (((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F));
+            if (cp >= 0 && cp < 512 && code2byte[cp] >= 0) out[w++] = (char)code2byte[cp];
+            else { for (int k = 0; k < l; k++) out[w++] = s[k]; }
             s += l;
         }
     }

@@ -281,6 +281,9 @@ int llama_load(LlamaModel *m, const char *path) {
     get_u32(&g, "llama.rope.dimension_count", 0, &c->head_dim);
     get_f32(&g, "llama.rope.freq_base", 10000.0f, &c->rope_theta);
     get_u32(&g, "llama.vocab_size", 0, &c->vocab);
+    get_u32(&g, "tokenizer.ggml.bos_token_id", 1, &c->bos_id);
+    get_u32(&g, "tokenizer.ggml.eos_token_id", 2, &c->eos_id);
+    get_u32(&g, "tokenizer.ggml.unknown_token_id", 0, &c->unk_id);
     c->is_moe = c->n_expert > 0;
     if (c->head_dim == 0) c->head_dim = c->n_embd / c->n_head;
 

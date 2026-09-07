@@ -17,6 +17,7 @@ typedef struct {
     int n_expert, n_expert_used, max_seq;
     float rmsnorm_eps, rope_theta;
     int is_moe;   /* 1=Mixrtal MoE, 0=dense SwiGLU */
+    int bos_id, eos_id, unk_id;   /* 特殊 token id */
 } LlamaConfig;
 
 typedef struct {
