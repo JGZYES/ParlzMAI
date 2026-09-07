@@ -11,9 +11,22 @@
 #include "infer/generate.h"
 #include "utils/logger.h"
 
+#include <time.h>
+
 /* 简单监控计数（单线程 demo 用） */
 static unsigned long g_requests = 0;
 static unsigned long g_tokens = 0;
+
+/* 限流：每秒最多 RATE_LIMIT 个请求（令牌桶简化——滑动窗口） */
+#define RATE_LIMIT 20
+static long g_window_start = 0;
+static unsigned int g_window_hits = 0;
+static int rate_limited(void) {
+    long now = (long)time(NULL);
+    if (now != g_window_start) { g_window_start = now; g_window_hits = 0; }
+    g_window_hits++;
+    return g_window_hits > RATE_LIMIT;
+}
 
 /* ---- 请求上下文 ---- */
 typedef struct {
@@ -138,6 +151,9 @@ static enum MHD_Result access_handler(void *cls, struct MHD_Connection *conn,
                                       size_t *upload_data_size, void **con_cls) {
     (void)version;
     const Model *m = (const Model *)cls;
+    /* 限流：每连接处理前先判断 */
+    if (rate_limited())
+        return send_text(conn, MHD_HTTP_TOO_MANY_REQUESTS, "text/plain", "rate limited");
     ConnInfo *ci = (ConnInfo *)*con_cls;
     if (!ci) {
         ci = calloc(1, sizeof(ConnInfo));

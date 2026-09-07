@@ -95,14 +95,10 @@ ctest --test-dir build                 # 单元测试
 ```
 
 ## Git 仓库
-- 代码已本地提交（59 文件，已排除 `wsl/`、`models/*.pap|*.gguf`、`output/`、`build/` 等大件/产物）。
-- 远端已配置：`origin=https://github.com/JGZYES/ParlzMAI.git`、`parlz=https://git.parlz.com/JGZ_YES/ParlzMAI.git`。
-- ⚠️ **推送需认证**：本机无 GitHub PAT / SSH key，`git push` 被要求登录。配置后：
-  ```bash
-  git push -u origin main
-  git push -u parlz main
-  ```
-  或提供 token：`git push https://<TOKEN>@github.com/JGZYES/ParlzMAI.git main`。
+- ✅ **GitHub**：`git push -u origin main` 成功（`origin=https://github.com/JGZYES/ParlzMAI.git`），本地 HEAD == origin/main。
+  （用 `gh auth token` → `credential.helper=store`，并 `git config --global http.version HTTP/1.1` 避开 HTTP/2 帧错误。）
+- ⚠️ **parlz**（`https://git.parlz.com/JGZ_YES/ParlzMAI.git`）：SSH(22) 端口在本机**网络不可达**（443 可达），SSH 密钥已加到 Gitea 但 22 连不上；需 **HTTPS 凭据**推送：
+  `git push https://<TOKEN>@git.parlz.com/JGZ_YES/ParlzMAI.git main`
 
 ---
 
