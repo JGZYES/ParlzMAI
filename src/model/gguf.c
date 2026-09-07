@@ -12,7 +12,15 @@
 #define GGML_Q5_0 6
 #define GGML_Q5_1 7
 #define GGML_Q8_0 8
+#define GGML_Q2_K 10
+#define GGML_Q3_K 11
+#define GGML_Q4_K 12
+#define GGML_Q5_K 13
+#define GGML_Q6_K 14
+#define GGML_Q8_K 15
 #define GGML_BF16 16
+#define QK_K 256
+#define K_SCALE_SIZE 12
 
 /* ---- 元数据值类型 ---- */
 #define GGVAL_UINT8 0
@@ -72,10 +80,16 @@ static uint32_t type_block_bytes(uint32_t t) {
         case GGML_F32:   return 32 * 4;
         case GGML_F16:   return 32 * 2;
         case GGML_BF16:  return 32 * 2;
-        case GGML_Q8_0:  return 2 + 32;              /* d(f16) + 32*int8 */
-        case GGML_Q4_0:  return 2 + 16;              /* d(f16) + 16*4bit(=32) */
-        case GGML_Q5_0:  return 2 + 16 + 4;          /* d + low + qh */
-        case GGML_Q5_1:  return 2 + 2 + 16 + 4;      /* d + m + low + qh */
+        case GGML_Q8_0:  return 2 + 32;
+        case GGML_Q4_0:  return 2 + 16;
+        case GGML_Q5_0:  return 2 + 16 + 4;
+        case GGML_Q5_1:  return 2 + 2 + 16 + 4;
+        case GGML_Q2_K:  return 84;   /* QK_K=256 */
+        case GGML_Q3_K:  return 110;
+        case GGML_Q4_K:  return 144;
+        case GGML_Q5_K:  return 176;
+        case GGML_Q6_K:  return 210;
+        case GGML_Q8_K:  return 274;
         default:         return 0;
     }
 }
@@ -143,6 +157,133 @@ static void dequant_block(uint32_t t, const unsigned char *p, float *out) {
     }
 }
 
+/* ---- K 系量化（QK_K=256 块）反量化 ---- */
+
+static void get_scale_min_k4(int j, const uint8_t *q, uint8_t *d, uint8_t *m) {
+    if (j < 4) { *d = q[j] & 63; *m = q[j + 4] & 63; }
+    else { *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4); *m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4); }
+}
+
+static void dequant_k(uint32_t t, const unsigned char *p, float *out) {
+    int i;
+    if (t == GGML_Q8_K) {
+        float d = fp16_to_f32(*(const uint16_t *)(p));
+        const int8_t *qs = (const int8_t *)(p + 2);
+        for (i = 0; i < 256; i++) out[i] = d * qs[i];
+    } else if (t == GGML_Q6_K) {
+        const uint8_t *ql = p;          /* 128 */
+        const uint8_t *qh = p + 128;    /* 64  */
+        const int8_t *sc0 = (const int8_t *)(p + 192); /* 16 */
+        float d = fp16_to_f32(*(const uint16_t *)(p + 208));
+        for (int n = 0; n < 256; n += 128) {
+            for (int l = 0; l < 32; l++) {
+                int is = l / 16;
+                int8_t q1 = (int8_t)((ql[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                int8_t q3 = (int8_t)((ql[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                int8_t q4 = (int8_t)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                out[n + l + 0]  = d * sc0[is + 0] * q1;
+                out[n + l + 32] = d * sc0[is + 2] * q2;
+                out[n + l + 64] = d * sc0[is + 4] * q3;
+                out[n + l + 96] = d * sc0[is + 6] * q4;
+            }
+            ql += 64; qh += 32; sc0 += 8;
+        }
+    } else if (t == GGML_Q4_K || t == GGML_Q5_K) {
+        float d = fp16_to_f32(*(const uint16_t *)(p));
+        float mn = fp16_to_f32(*(const uint16_t *)(p + 2));
+        const uint8_t *scales = p + 4;      /* 12 */
+        const uint8_t *qh = (t == GGML_Q5_K) ? (p + 16) : NULL; /* 32 */
+        const uint8_t *ql = (t == GGML_Q5_K) ? (p + 48) : (p + 16); /* 128 */
+        if (t == GGML_Q5_K) {
+            int is = 0; uint8_t u1 = 1, u2 = 2;
+            for (int j = 0; j < 256; j += 64) {
+                uint8_t sc, m;
+                get_scale_min_k4(is + 0, scales, &sc, &m);
+                float d1 = d * sc, m1 = mn * m;
+                get_scale_min_k4(is + 1, scales, &sc, &m);
+                float d2 = d * sc, m2 = mn * m;
+                for (int l = 0; l < 32; l++) { out[l] = d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1; out[l + 32] = d2 * ((ql[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2; }
+                ql += 32; is += 2; u1 <<= 2; u2 <<= 2; out += 64;
+            }
+        } else { /* Q4_K */
+            int is = 0;
+            for (int j = 0; j < 256; j += 64) {
+                uint8_t sc, m;
+                get_scale_min_k4(is + 0, scales, &sc, &m);
+                float d1 = d * sc, m1 = mn * m;
+                get_scale_min_k4(is + 1, scales, &sc, &m);
+                float d2 = d * sc, m2 = mn * m;
+                for (int l = 0; l < 32; l++) { out[l] = d1 * (ql[l] & 0xF) - m1; out[l + 32] = d2 * (ql[l] >> 4) - m2; }
+                ql += 32; is += 2; out += 64;
+            }
+        }
+    } else if (t == GGML_Q2_K) {
+        float d = fp16_to_f32(*(const uint16_t *)(p));
+        float mn = fp16_to_f32(*(const uint16_t *)(p + 2));
+        const uint8_t *scales = p + 4; /* 16 */
+        const uint8_t *q = p + 20;     /* 64 */
+        int is = 0;
+        for (int n = 0; n < 256; n += 128) {
+            int shift = 0;
+            for (int j = 0; j < 4; j++) {
+                uint8_t sc = scales[is++];
+                float dl = d * (sc & 0xF), ml = mn * (sc >> 4);
+                for (int l = 0; l < 16; l++) *out++ = dl * (float)((int8_t)((q[l] >> shift) & 3)) - ml;
+                sc = scales[is++];
+                dl = d * (sc & 0xF); ml = mn * (sc >> 4);
+                for (int l = 0; l < 16; l++) *out++ = dl * (float)((int8_t)((q[l + 16] >> shift) & 3)) - ml;
+                shift += 2;
+            }
+            q += 32;
+        }
+    } else { /* Q3_K */
+        const uint8_t *hm = p;          /* hmask 32 */
+        const uint8_t *q3 = p + 32;     /* qs 64 */
+        const uint8_t *sc3 = p + 96;    /* scales 12 */
+        float d = fp16_to_f32(*(const uint16_t *)(p + 108));
+        const uint32_t kmask1 = 0x03030303u, kmask2 = 0x0f0f0f0fu;
+        uint32_t aux[4]; const int8_t *scales = (const int8_t *)aux;
+        uint32_t tmp;
+        memcpy(aux, sc3, 12);
+        tmp = aux[2];
+        aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
+        aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
+        aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
+        aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
+        int is = 0;
+        for (int n = 0; n < 256; n += 128) {
+            int shift = 0; uint8_t m = 1;
+            for (int j = 0; j < 4; j++) {
+                float dl = d * (scales[is++] - 32);
+                for (int l = 0; l < 16; l++) { *out++ = dl * ((int8_t)((q3[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4)); }
+                dl = d * (scales[is++] - 32);
+                for (int l = 0; l < 16; l++) { *out++ = dl * ((int8_t)((q3[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4)); }
+                shift += 2; m <<= 1;
+            }
+            q3 += 32;
+        }
+    }
+}
+
+static int is_k_type(int t) {
+    return t == GGML_Q2_K || t == GGML_Q3_K || t == GGML_Q4_K || t == GGML_Q5_K || t == GGML_Q6_K || t == GGML_Q8_K;
+}
+
+/* ggml 行大小：张量最后一维(ne0) 按块对齐补零后的字节数 */
+static size_t ggml_row_size(uint32_t t, uint64_t ne0) {
+    switch (t) {
+        case GGML_F32:  return (size_t)ne0 * 4;
+        case GGML_F16:  return (size_t)ne0 * 2;
+        case GGML_BF16: return (size_t)ne0 * 2;
+        default: {
+            uint32_t bs = is_k_type(t) ? 256u : 32u;
+            uint64_t nblocks = (ne0 + bs - 1) / bs;
+            return (size_t)nblocks * type_block_bytes(t);
+        }
+    }
+}
+
 /* ---- 张量 ---- */
 
 int gguf_has_tensor(const Gguf *g, const char *name) {
@@ -162,19 +303,35 @@ static uint64_t tensor_n(const Gguf *g, uint64_t i) {
 long gguf_tensor_to_f32(const Gguf *g, const char *name, float *out) {
     for (uint64_t i = 0; i < g->tensor_count; i++) {
         if (strcmp(g->tensor_name[i], name) != 0) continue;
-        uint64_t n = tensor_n(g, i);
         uint32_t t = g->ggml_type[i];
         uint32_t bb = type_block_bytes(t);
         if (bb == 0) return -1;
+        uint64_t ne0 = g->dims[i][0];
+        uint64_t rows = 1;
+        for (uint32_t d = 1; d < g->n_dims[i]; d++) rows *= g->dims[i][d];
+        size_t row_size = ggml_row_size(t, ne0);
         const unsigned char *p = gd(g, g->data_offset + (size_t)g->offset[i]);
-        uint64_t blocks = (n + 31) / 32;
+        int kq = is_k_type(t);
+        uint32_t bs = kq ? 256u : 32u;
+        uint64_t nblocks = (ne0 + bs - 1) / bs;
         uint64_t k = 0;
-        for (uint64_t b = 0; b < blocks; b++) {
-            float tmp[32];
-            dequant_block(t, p + (size_t)b * bb, tmp);
-            for (int j = 0; j < 32 && k < n; j++) out[k++] = tmp[j];
+        for (uint64_t r = 0; r < rows; r++) {
+            const unsigned char *pr = p + r * row_size;
+            for (uint64_t b = 0; b < nblocks; b++) {
+                int remain = (int)(ne0 - b * bs);
+                int take = remain < (int)bs ? remain : (int)bs;
+                if (kq) {
+                    float tmp[256];
+                    dequant_k(t, pr + b * bb, tmp);
+                    for (int j = 0; j < take; j++) out[k++] = tmp[j];
+                } else {
+                    float tmp[32];
+                    dequant_block(t, pr + b * bb, tmp);
+                    for (int j = 0; j < take; j++) out[k++] = tmp[j];
+                }
+            }
         }
-        return (long)n;
+        return (long)k;
     }
     return -1;
 }
@@ -441,6 +598,12 @@ static const char *type_name(uint32_t t) {
         case GGML_Q4_0: return "Q4_0";
         case GGML_Q5_0: return "Q5_0";
         case GGML_Q5_1: return "Q5_1";
+        case GGML_Q2_K: return "Q2_K";
+        case GGML_Q3_K: return "Q3_K";
+        case GGML_Q4_K: return "Q4_K";
+        case GGML_Q5_K: return "Q5_K";
+        case GGML_Q6_K: return "Q6_K";
+        case GGML_Q8_K: return "Q8_K";
         default: return "?";
     }
 }

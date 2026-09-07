@@ -1,8 +1,11 @@
 #include "model/model.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "model/gguf.h"
 
@@ -191,26 +194,27 @@ int model_load(Model *m, const char *path) {
     if (!m || !path) return -1;
     memset(m, 0, sizeof(*m));
 
-    FILE *fh = fopen(path, "rb");
-    if (!fh) { perror("open"); return -2; }
-    fseek(fh, 0, SEEK_END);
-    long sz = ftell(fh);
-    fseek(fh, 0, SEEK_SET);
-    if (sz <= 0) { fclose(fh); return -3; }
-    unsigned char *buf = malloc((size_t)sz);
-    if (!buf) { fclose(fh); return -4; }
-    size_t nrd = fread(buf, 1, (size_t)sz, fh);
-    fclose(fh);
-    if (nrd != (size_t)sz) { free(buf); return -5; }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); return -2; }
+    off_t sz = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
+    size_t map_sz = 0;
+    if (sz <= 0) { close(fd); return -3; }
+    map_sz = (size_t)sz;
+    unsigned char *buf = mmap(NULL, map_sz, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (buf == MAP_FAILED) { return -4; }
+    size_t nrd = map_sz;   /* mmap 成功即全部可读 */
+    (void)nrd;
 
     size_t off = 0;
     ModelConfig *c = &m->config;
     config_init(c);
-    if (expect_magic(buf, &off) != 0) { free(buf); return -10; }
+    if (expect_magic(buf, &off) != 0) { munmap(buf, map_sz); return -10; }
     uint32_t version = rd_u32(buf, &off);
-    if (version != 1) { free(buf); return -11; }
+    if (version != 1) { munmap(buf, map_sz); return -11; }
     uint32_t dtype = rd_u32(buf, &off);
-    if (dtype > 2) { free(buf); return -12; }   /* 0=f32,1=fp16,2=q8 */
+    if (dtype > 2) { munmap(buf, map_sz); return -12; }   /* 0=f32,1=fp16,2=q8 */
 
     c->vocab_size     = (int)rd_u32(buf, &off);
     c->n_layer        = (int)rd_u32(buf, &off);
@@ -262,7 +266,7 @@ int model_load(Model *m, const char *path) {
     /* ---- weights 段 ---- */
     uint32_t n_tensors = rd_u32(buf, &off);
 
-    if (alloc_weights(m) != 0) { free(buf); return -14; }
+    if (alloc_weights(m) != 0) { munmap(buf, map_sz); return -14; }
 
     for (uint32_t t = 0; t < n_tensors; t++) {
         uint32_t nl = rd_u32(buf, &off);
@@ -275,7 +279,7 @@ int model_load(Model *m, const char *path) {
         uint32_t cols = rd_u32(buf, &off);
         size_t n = (size_t)rows * cols;
         float *tmp = malloc(n * sizeof(float));
-        if (!tmp) { free(buf); return -13; }
+        if (!tmp) { munmap(buf, map_sz); return -13; }
         size_t used = read_weight_f32(buf + off, rows, cols, dtype, tmp);
         off += used;
         load_weight(m, name, rows, cols, tmp);
@@ -283,7 +287,7 @@ int model_load(Model *m, const char *path) {
     }
 
     m->is_loaded = 1;
-    free(buf);
+    munmap(buf, map_sz);
     return 0;
 }
 
