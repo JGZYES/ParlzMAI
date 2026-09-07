@@ -40,6 +40,7 @@ int gguf_meta_u32(const Gguf *g, const char *key, uint32_t *v);
 int gguf_meta_f32(const Gguf *g, const char *key, float *v);
 int gguf_meta_u32_array(const Gguf *g, const char *key, uint32_t *out, uint64_t max);
 int gguf_meta_u8_array(const Gguf *g, const char *key, uint8_t *out, uint64_t max);
+int gguf_meta_f32_array(const Gguf *g, const char *key, float *out, uint64_t max);
 int gguf_meta_string(const Gguf *g, const char *key, char *out, size_t max);
 /* 读字符串数组（如 tokenizer.ggml.tokens/merges）。成功返回 1，*out 需调用 gguf_free_string_array 释放 */
 int gguf_meta_string_array(const Gguf *g, const char *key, char ***out, int *count);

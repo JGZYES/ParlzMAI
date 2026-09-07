@@ -85,7 +85,8 @@ add_library(moe_model STATIC
   src/model/model.c
   src/model/gguf.c
   src/model/llama.c
-  src/model/llama_tokenizer.c)
+  src/model/llama_tokenizer.c
+  src/model/llama_tokenizer_spm.c)
 target_include_directories(moe_model PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(moe_model PRIVATE ${MOE_WARNINGS} -O3)
 

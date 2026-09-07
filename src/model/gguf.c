@@ -524,6 +524,20 @@ int gguf_meta_u8_array(const Gguf *g, const char *key, uint8_t *out, uint64_t ma
     return 0;
 }
 
+int gguf_meta_f32_array(const Gguf *g, const char *key, float *out, uint64_t max) {
+    ptrdiff_t i = meta_index(g, key);
+    if (i < 0) return 0;
+    const unsigned char *p = g->meta_off[i];
+    if (g->meta_type[i] != GGVAL_ARRAY) return 0;
+    uint32_t it = rd_u32(p);
+    size_t o = 4;
+    size_t n = rd_len(g->version, p, &o);
+    if (it != GGVAL_FLOAT32) return 0;
+    size_t take = n < max ? n : max;
+    for (size_t k = 0; k < take; k++) out[k] = rd_f32(p + o + k * 4);
+    return 1;
+}
+
 int gguf_meta_string(const Gguf *g, const char *key, char *out, size_t max) {
     ptrdiff_t i = meta_index(g, key);
     if (i < 0) return 0;

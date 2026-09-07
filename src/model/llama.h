@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "model/llama_tokenizer.h"
+#include "model/llama_tokenizer_spm.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +36,9 @@ typedef struct {
     /* KV cache（内部使用） */
     float **k_cache, **v_cache;      /* [L] max_seq * n_head_kv * head_dim */
 
-    LlamaTokenizer tok;              /* 分词器（若 GGUF 带 tokenizer.ggml.tokens） */
+    LlamaTokenizer tok;             /* gpt2 分词器 */
+    LlamaTokenizerSPM spm_tok;      /* llama/spm 分词器 */
+    int  is_spm;                    /* 1=SentencePiece(llama), 0=gpt2 */
 
     int is_loaded;
 } LlamaModel;

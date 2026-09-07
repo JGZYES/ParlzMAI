@@ -365,15 +365,27 @@ int llama_load(LlamaModel *m, const char *path) {
         free(tmp);
     }
 
-    /* 分词器（tokenizer.ggml.tokens/merges） */
+    /* 分词器（按 tokenizer.ggml.model 选 SPM(llama) 或 gpt2 字节级） */
     {
+        char *model_type = NULL; char tmp[64];
+        if (gguf_meta_string(&g, "tokenizer.ggml.model", tmp, sizeof(tmp))) model_type = tmp;
         char **toks = NULL; int ntok = 0;
         if (gguf_meta_string_array(&g, "tokenizer.ggml.tokens", &toks, &ntok) && ntok > 0) {
-            char **mrg = NULL; int nmrg = 0;
-            gguf_meta_string_array(&g, "tokenizer.ggml.merges", &mrg, &nmrg);
-            llmtok_init(&m->tok, toks, ntok, mrg, nmrg);
+            int spm = model_type && (strstr(model_type, "llama") || strstr(model_type, "spm"));
+            if (spm) {
+                float *scores = calloc((size_t)ntok, sizeof(float));
+                gguf_meta_f32_array(&g, "tokenizer.ggml.scores", scores, (uint64_t)ntok);
+                llmtok_spm_init(&m->spm_tok, toks, ntok, scores);
+                free(scores);
+                m->is_spm = 1;
+            } else {
+                char **mrg = NULL; int nmrg = 0;
+                gguf_meta_string_array(&g, "tokenizer.ggml.merges", &mrg, &nmrg);
+                llmtok_init(&m->tok, toks, ntok, mrg, nmrg);
+                gguf_free_string_array(mrg, nmrg);
+                m->is_spm = 0;
+            }
             gguf_free_string_array(toks, ntok);
-            gguf_free_string_array(mrg, nmrg);
         }
     }
 
@@ -383,19 +395,22 @@ int llama_load(LlamaModel *m, const char *path) {
 }
 
 int llama_tokenize(const LlamaModel *m, const char *text, int *ids, int max) {
-    if (!m->is_loaded || m->tok.vocab_size == 0) return -1;
-    return llmtok_encode(&m->tok, text, ids, max);
+    if (!m->is_loaded) return -1;
+    if (m->is_spm) return (m->spm_tok.vocab_size > 0) ? llmtok_spm_encode(&m->spm_tok, text, ids, max) : -1;
+    return (m->tok.vocab_size > 0) ? llmtok_encode(&m->tok, text, ids, max) : -1;
 }
 
 int llama_detokenize(const LlamaModel *m, const int *ids, int n, char *out, int max) {
-    if (!m->is_loaded || m->tok.vocab_size == 0) return -1;
-    return llmtok_decode(&m->tok, ids, n, out, max);
+    if (!m->is_loaded) return -1;
+    if (m->is_spm) return (m->spm_tok.vocab_size > 0) ? llmtok_spm_decode(&m->spm_tok, ids, n, out, max) : -1;
+    return (m->tok.vocab_size > 0) ? llmtok_decode(&m->tok, ids, n, out, max) : -1;
 }
 
 void llama_free(LlamaModel *m) {
     if (!m) return;
     int L = m->c.n_layer, E = m->c.n_expert;
     llmtok_free(&m->tok);
+    llmtok_spm_free(&m->spm_tok);
     free(m->token_embd); free(m->output); free(m->output_norm);
     for (int i = 0; i < L; i++) {
         free(m->attn_norm[i]); free(m->attn_q[i]); free(m->attn_k[i]);
