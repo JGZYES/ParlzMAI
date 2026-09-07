@@ -28,6 +28,16 @@ static void matvec(const float *x, const float *W, int k, int cols, float *y) {
     }
 }
 
+/* 转置 matvec：y[cols] = x[inner] @ W' ，其中 W 以 [out=cols][in=inner] 行主序存放（W[j*inner+i]）。
+   qwen2moe 的 exps/shexp 张量（GGUF [ne0,ne1] 存为 [ne1][ne0]）需要这种访问。 */
+static void matvec_t(const float *x, const float *W, int inner, int cols, float *y) {
+    for (int j = 0; j < cols; j++) {
+        float s = 0.0f;
+        for (int i = 0; i < inner; i++) s += x[i] * W[j * inner + i];
+        y[j] = s;
+    }
+}
+
 static void silu_inplace(float *x, int n) { for (int i = 0; i < n; i++) x[i] = siluf(x[i]); }
 
 /* RoPE (NeoX half-rotate) 作用于一个 head 向量（长度 dim），位置 pos */
@@ -99,6 +109,69 @@ static void dense_ffn(const LlamaModel *m, int l, const float *x, float *out) {
     free(g); free(up);
 }
 
+/* ---- Qwen2-MoE FFN：共享专家（始终开启）+ top-k 路由专家（重归一化） */
+static void qwen2moe_ffn(const LlamaModel *m, int l, const float *x, float *out) {
+    int d = m->c.n_embd, ne = m->c.n_expert, used = m->c.n_expert_used;
+    int ede = m->c.exp_ffn_dim, sh = m->c.sh_ffn_dim;
+
+    /* router logits */
+    float *probs = malloc((size_t)ne * 4);
+    matvec_t(x, m->router[l], d, ne, probs);   /* ffn_gate_inp [n_embd, E] */
+    float mx = probs[0];
+    for (int e = 1; e < ne; e++) if (probs[e] > mx) mx = probs[e];
+    float sum = 0.0f;
+    for (int e = 0; e < ne; e++) { probs[e] = expf(probs[e] - mx); sum += probs[e]; }
+    for (int e = 0; e < ne; e++) probs[e] /= sum;
+
+    /* top-k 专家（不重复） */
+    int idx[64];
+    for (int t = 0; t < used; t++) {
+        int best = -1; float bp = -1.0f;
+        for (int e = 0; e < ne; e++) {
+            int taken = 0;
+            for (int q = 0; q < t; q++) if (idx[q] == e) { taken = 1; break; }
+            if (!taken && probs[e] > bp) { bp = probs[e]; best = e; }
+        }
+        idx[t] = best;
+    }
+    float wsum = 0.0f;
+    for (int t = 0; t < used; t++) wsum += probs[idx[t]];
+
+    /* 共享专家（始终开启） */
+    float *sg = malloc((size_t)sh * 4);
+    float *sup = malloc((size_t)sh * 4);
+    float *sh_out = malloc((size_t)d * 4);
+    matvec_t(x, m->sh_gate[l], d, sh, sg); silu_inplace(sg, sh);
+    matvec_t(x, m->sh_up[l], d, sh, sup);
+    for (int j = 0; j < sh; j++) sg[j] *= sup[j];
+    matvec_t(sg, m->sh_down[l], sh, d, sh_out);
+
+    /* 共享门（sigmoid(dot(x, sh_gate_inp))），若该权重缺失则默认 1.0 */
+    float gsc = 1.0f;
+    if (m->sh_gate_inp[l]) {
+        float s = 0.0f;
+        for (int i = 0; i < d; i++) s += x[i] * m->sh_gate_inp[l][i];
+        gsc = 1.0f / (1.0f + expf(-s));
+    }
+
+    for (int i = 0; i < d; i++) out[i] = gsc * sh_out[i];
+
+    /* 路由专家 */
+    float *eg = malloc((size_t)ede * 4);
+    float *eup = malloc((size_t)ede * 4);
+    float *eo = malloc((size_t)d * 4);
+    for (int t = 0; t < used; t++) {
+        int e = idx[t];
+        float w = probs[e] / (wsum + 1e-9f);
+        matvec_t(x, m->ffn_gate[l][e], d, ede, eg); silu_inplace(eg, ede);
+        matvec_t(x, m->ffn_up[l][e], d, ede, eup);
+        for (int j = 0; j < ede; j++) eg[j] *= eup[j];
+        matvec_t(eg, m->ffn_down[l][e], ede, d, eo);
+        for (int i = 0; i < d; i++) out[i] += w * eo[i];
+    }
+    free(probs); free(sg); free(sup); free(sh_out); free(eg); free(eup); free(eo);
+}
+
 /* ---- 单位置前向 ---- */
 void llama_forward(LlamaModel *m, int pos, const float *x, float *logits) {
     const LlamaConfig *c = &m->c;
@@ -124,6 +197,10 @@ void llama_forward(LlamaModel *m, int pos, const float *x, float *logits) {
         matvec(a, m->attn_q[l], d, H * hd, q);
         matvec(a, m->attn_k[l], d, HK * hd, k);
         matvec(a, m->attn_v[l], d, HK * hd, v);
+        if (c->is_qwen2moe) {   /* QK 偏置 */
+            for (int t = 0; t < H * hd; t++) q[t] += m->attn_q_b[l][t];
+            for (int t = 0; t < HK * hd; t++) { k[t] += m->attn_k_b[l][t]; v[t] += m->attn_v_b[l][t]; }
+        }
 
         for (int hh = 0; hh < H; hh++) rope_inplace(m, q + (size_t)hh * hd, pos);
         for (int hh = 0; hh < HK; hh++) rope_inplace(m, k + (size_t)hh * hd, pos);
@@ -160,7 +237,9 @@ void llama_forward(LlamaModel *m, int pos, const float *x, float *logits) {
         for (int i = 0; i < d; i++) h[i] += o[i];
 
         rmsnorm(h, m->ffn_norm[l], c->rmsnorm_eps, d, a);
-        if (c->is_moe) moe_ffn(m, l, a, ffn); else dense_ffn(m, l, a, ffn);
+        if (c->is_qwen2moe) qwen2moe_ffn(m, l, a, ffn);
+        else if (c->is_moe) moe_ffn(m, l, a, ffn);
+        else dense_ffn(m, l, a, ffn);
         for (int i = 0; i < d; i++) h[i] += ffn[i];
     }
 
@@ -249,6 +328,26 @@ static void load_w(LlamaModel *m, const char *name, const float *buf, uint64_t n
         else if (strcmp(s, ".ffn_gate.weight") == 0) memcpy(m->df_gate[i], buf, (size_t)c->n_embd * c->ffn_dim * 4);
         else if (strcmp(s, ".ffn_up.weight") == 0) memcpy(m->df_up[i], buf, (size_t)c->n_embd * c->ffn_dim * 4);
         else if (strcmp(s, ".ffn_down.weight") == 0) memcpy(m->df_down[i], buf, (size_t)c->ffn_dim * c->n_embd * 4);
+        /* ---- qwen2moe ---- */
+        else if (strcmp(s, ".attn_q.bias") == 0) memcpy(m->attn_q_b[i], buf, (size_t)c->n_head * c->head_dim * 4);
+        else if (strcmp(s, ".attn_k.bias") == 0) memcpy(m->attn_k_b[i], buf, (size_t)c->n_head_kv * c->head_dim * 4);
+        else if (strcmp(s, ".attn_v.bias") == 0) memcpy(m->attn_v_b[i], buf, (size_t)c->n_head_kv * c->head_dim * 4);
+        else if (strcmp(s, ".ffn_gate_inp_shexp.weight") == 0) memcpy(m->sh_gate_inp[i], buf, (size_t)c->n_embd * 4);
+        else if (strcmp(s, ".ffn_gate_shexp.weight") == 0) memcpy(m->sh_gate[i], buf, (size_t)c->n_embd * c->sh_ffn_dim * 4);
+        else if (strcmp(s, ".ffn_up_shexp.weight") == 0) memcpy(m->sh_up[i], buf, (size_t)c->n_embd * c->sh_ffn_dim * 4);
+        else if (strcmp(s, ".ffn_down_shexp.weight") == 0) memcpy(m->sh_down[i], buf, (size_t)c->sh_ffn_dim * c->n_embd * 4);
+        else if (strcmp(s, ".ffn_gate_exps.weight") == 0) {
+            size_t esz = (size_t)c->n_embd * c->exp_ffn_dim;
+            for (int x = 0; x < c->n_expert; x++) memcpy(m->ffn_gate[i][x], buf + (size_t)x * esz, esz * 4);
+        }
+        else if (strcmp(s, ".ffn_up_exps.weight") == 0) {
+            size_t esz = (size_t)c->n_embd * c->exp_ffn_dim;
+            for (int x = 0; x < c->n_expert; x++) memcpy(m->ffn_up[i][x], buf + (size_t)x * esz, esz * 4);
+        }
+        else if (strcmp(s, ".ffn_down_exps.weight") == 0) {
+            size_t esz = (size_t)c->exp_ffn_dim * c->n_embd;
+            for (int x = 0; x < c->n_expert; x++) memcpy(m->ffn_down[i][x], buf + (size_t)x * esz, esz * 4);
+        }
         return;
     }
     fprintf(stderr, "[warn] 忽略未知权重: %s\n", name);
@@ -269,23 +368,37 @@ int llama_load(LlamaModel *m, const char *path) {
     Gguf g;
     if (gguf_open(&g, path) != 0) { fprintf(stderr, "[err] GGUF 打开失败: %s\n", path); return -1; }
     LlamaConfig *c = &m->c;
-    get_u32(&g, "llama.block_count", 4, &c->n_layer);
-    get_u32(&g, "llama.embedding_length", 512, &c->n_embd);
-    get_u32(&g, "llama.attention.head_count", 8, &c->n_head);
-    get_u32(&g, "llama.attention.head_count_kv", c->n_head, &c->n_head_kv);
-    get_f32(&g, "llama.attention.layer_norm_rms_epsilon", 1e-5f, &c->rmsnorm_eps);
-    get_u32(&g, "llama.feed_forward_length", 1024, &c->ffn_dim);
-    get_u32(&g, "llama.expert_count", 0, &c->n_expert);
-    get_u32(&g, "llama.expert_used_count", 2, &c->n_expert_used);
-    get_u32(&g, "llama.context_length", 256, &c->max_seq);
-    get_u32(&g, "llama.rope.dimension_count", 0, &c->head_dim);
-    get_f32(&g, "llama.rope.freq_base", 10000.0f, &c->rope_theta);
+    /* 架构：llama / qwen2moe 等 */
+    char archbuf[64] = "";
+    gguf_meta_string(&g, "general.architecture", archbuf, sizeof(archbuf));
+    c->is_qwen2moe = (strcmp(archbuf, "qwen2moe") == 0);
+    const char *pfx = c->is_qwen2moe ? "qwen2moe" : "llama";
+    char kbuf[128];
+    #define CKEY(suf) (snprintf(kbuf, sizeof(kbuf), "%s.%s", pfx, suf), kbuf)
+
+    get_u32(&g, CKEY("block_count"), 4, &c->n_layer);
+    get_u32(&g, CKEY("embedding_length"), 512, &c->n_embd);
+    get_u32(&g, CKEY("attention.head_count"), 8, &c->n_head);
+    get_u32(&g, CKEY("attention.head_count_kv"), c->n_head, &c->n_head_kv);
+    get_f32(&g, CKEY("attention.layer_norm_rms_epsilon"), 1e-5f, &c->rmsnorm_eps);
+    get_u32(&g, CKEY("feed_forward_length"), 1024, &c->ffn_dim);
+    get_u32(&g, CKEY("expert_count"), 0, &c->n_expert);
+    get_u32(&g, CKEY("expert_used_count"), 2, &c->n_expert_used);
+    get_u32(&g, CKEY("context_length"), 256, &c->max_seq);
+    get_u32(&g, CKEY("rope.dimension_count"), 0, &c->head_dim);
+    get_f32(&g, CKEY("rope.freq_base"), 10000.0f, &c->rope_theta);
     get_u32(&g, "llama.vocab_size", 0, &c->vocab);
     get_u32(&g, "tokenizer.ggml.bos_token_id", 1, &c->bos_id);
     get_u32(&g, "tokenizer.ggml.eos_token_id", 2, &c->eos_id);
     get_u32(&g, "tokenizer.ggml.unknown_token_id", 0, &c->unk_id);
+    if (c->is_qwen2moe) {
+        get_u32(&g, CKEY("expert_feed_forward_length"), c->ffn_dim, &c->exp_ffn_dim);
+        get_u32(&g, CKEY("expert_shared_feed_forward_length"), c->ffn_dim, &c->sh_ffn_dim);
+    }
     c->is_moe = c->n_expert > 0;
     if (c->head_dim == 0) c->head_dim = c->n_embd / c->n_head;
+    if (c->exp_ffn_dim == 0) c->exp_ffn_dim = c->ffn_dim;
+    if (c->sh_ffn_dim == 0) c->sh_ffn_dim = c->ffn_dim;
 
     /* vocab 从 token_embd 张量推断 */
     if (c->vocab == 0 && gguf_has_tensor(&g, "token_embd.weight")) {
@@ -315,6 +428,13 @@ int llama_load(LlamaModel *m, const char *path) {
     m->df_down = calloc(L, sizeof(float *));
     m->k_cache = calloc(L, sizeof(float *));
     m->v_cache = calloc(L, sizeof(float *));
+    m->attn_q_b = calloc(L, sizeof(float *));
+    m->attn_k_b = calloc(L, sizeof(float *));
+    m->attn_v_b = calloc(L, sizeof(float *));
+    m->sh_gate = calloc(L, sizeof(float *));
+    m->sh_up = calloc(L, sizeof(float *));
+    m->sh_down = calloc(L, sizeof(float *));
+    m->sh_gate_inp = calloc(L, sizeof(float *));
     size_t kv_per = (size_t)c->max_seq * c->n_head_kv * c->head_dim;
 
     for (int i = 0; i < L; i++) {
@@ -331,15 +451,28 @@ int llama_load(LlamaModel *m, const char *path) {
             m->ffn_gate[i] = calloc((size_t)E, sizeof(float *));
             m->ffn_up[i] = calloc((size_t)E, sizeof(float *));
             m->ffn_down[i] = calloc((size_t)E, sizeof(float *));
+            int ede = c->is_qwen2moe ? c->exp_ffn_dim : de;
             for (int e = 0; e < E; e++) {
-                m->ffn_gate[i][e] = malloc((size_t)d * de * 4);
-                m->ffn_up[i][e] = malloc((size_t)d * de * 4);
-                m->ffn_down[i][e] = malloc((size_t)de * d * 4);
+                m->ffn_gate[i][e] = malloc((size_t)d * ede * 4);
+                m->ffn_up[i][e] = malloc((size_t)d * ede * 4);
+                m->ffn_down[i][e] = malloc((size_t)ede * d * 4);
+            }
+            if (c->is_qwen2moe) {
+                int sh = c->sh_ffn_dim;
+                m->sh_gate[i] = malloc((size_t)d * sh * 4);
+                m->sh_up[i] = malloc((size_t)d * sh * 4);
+                m->sh_down[i] = malloc((size_t)sh * d * 4);
+                m->sh_gate_inp[i] = malloc((size_t)d * 4);
             }
         } else {
             m->df_gate[i] = malloc((size_t)d * de * 4);
             m->df_up[i] = malloc((size_t)d * de * 4);
             m->df_down[i] = malloc((size_t)de * d * 4);
+        }
+        if (c->is_qwen2moe) {
+            m->attn_q_b[i] = malloc((size_t)c->n_head * c->head_dim * 4);
+            m->attn_k_b[i] = malloc((size_t)c->n_head_kv * c->head_dim * 4);
+            m->attn_v_b[i] = malloc((size_t)c->n_head_kv * c->head_dim * 4);
         }
     }
 
@@ -419,6 +552,8 @@ void llama_free(LlamaModel *m) {
         free(m->attn_norm[i]); free(m->attn_q[i]); free(m->attn_k[i]);
         free(m->attn_v[i]); free(m->attn_o[i]); free(m->ffn_norm[i]);
         free(m->k_cache[i]); free(m->v_cache[i]);
+        free(m->attn_q_b[i]); free(m->attn_k_b[i]); free(m->attn_v_b[i]);
+        free(m->sh_gate[i]); free(m->sh_up[i]); free(m->sh_down[i]); free(m->sh_gate_inp[i]);
         free(m->router[i]);
         if (m->ffn_gate[i]) {
             for (int e = 0; e < E; e++) { free(m->ffn_gate[i][e]); free(m->ffn_up[i][e]); free(m->ffn_down[i][e]); }
@@ -428,6 +563,8 @@ void llama_free(LlamaModel *m) {
     }
     free(m->attn_norm); free(m->attn_q); free(m->attn_k); free(m->attn_v);
     free(m->attn_o); free(m->ffn_norm); free(m->router);
+    free(m->attn_q_b); free(m->attn_k_b); free(m->attn_v_b);
+    free(m->sh_gate); free(m->sh_up); free(m->sh_down); free(m->sh_gate_inp);
     free(m->ffn_gate); free(m->ffn_up); free(m->ffn_down);
     free(m->df_gate); free(m->df_up); free(m->df_down);
     free(m->k_cache); free(m->v_cache);
@@ -450,8 +587,18 @@ int64_t llama_param_count(const LlamaModel *m) {
         n += (int64_t)c->n_embd * c->n_embd;                 /* o */
         n += c->n_embd;                                      /* ffn_norm */
         if (c->is_moe) {
-            n += (int64_t)c->n_embd * c->n_expert;           /* router */
-            n += 3LL * c->n_expert * c->n_embd * c->ffn_dim;
+            if (c->is_qwen2moe) {
+                n += (int64_t)c->n_embd * c->n_expert;       /* router */
+                n += (int64_t)c->n_head * c->head_dim;       /* q bias */
+                n += 2LL * c->n_head_kv * c->head_dim;       /* k,v bias */
+                n += 3LL * c->n_expert * c->n_embd * c->exp_ffn_dim;   /* exps */
+                n += (int64_t)c->n_embd * c->sh_ffn_dim * 2; /* shared gate/up */
+                n += (int64_t)c->sh_ffn_dim * c->n_embd;     /* shared down */
+                n += c->n_embd;                              /* shared gate inp */
+            } else {
+                n += (int64_t)c->n_embd * c->n_expert;           /* router */
+                n += 3LL * c->n_expert * c->n_embd * c->ffn_dim;
+            }
         } else {
             n += 3LL * c->n_embd * c->ffn_dim;
         }

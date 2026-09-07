@@ -18,7 +18,7 @@
 #define GGML_Q5_K 13
 #define GGML_Q6_K 14
 #define GGML_Q8_K 15
-#define GGML_BF16 16
+#define GGML_BF16 30   /* GGUF 中 BF16 = 30（16 实为 IQ2_XXS） */
 #define QK_K 256
 #define K_SCALE_SIZE 12
 

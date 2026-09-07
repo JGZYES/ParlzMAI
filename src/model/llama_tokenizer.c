@@ -158,8 +158,10 @@ int llmtok_decode(const LlamaTokenizer *t, const int *ids, int n, char *out, int
         const char *s = t->tokens[id];
         while (*s && w < maxcat) {
             int l; int cp = u8_to_cp((const unsigned char *)s, &l);
-            int b = (cp >= 0 && cp < 512) ? code2byte[cp] : (cp & 0xFF);
-            out[w++] = (char)b;
+            if (l == 1) { out[w++] = (char)cp; s += 1; continue; }   /* ASCII */
+            /* 多字节：b2u 代理字符 -> 原字节；真实多字节字符 -> 原样输出 UTF-8 */
+            if (cp >= 0 && cp < 512 && code2byte[cp] >= 0) out[w++] = (char)code2byte[cp];
+            else { for (int k = 0; k < l; k++) out[w++] = s[k]; }
             s += l;
         }
     }

@@ -18,6 +18,8 @@ typedef struct {
     float rmsnorm_eps, rope_theta;
     int is_moe;   /* 1=Mixrtal MoE, 0=dense SwiGLU */
     int bos_id, eos_id, unk_id;   /* 特殊 token id */
+    int is_qwen2moe;              /* 1=Qwen2-MoE（有 shared expert + 3D exps + QKV bias） */
+    int exp_ffn_dim, sh_ffn_dim;  /* 路由专家 / 共享专家 ffn 维度（qwen2moe） */
 } LlamaConfig;
 
 typedef struct {
@@ -28,9 +30,13 @@ typedef struct {
     float *output;        /* n_embd * vocab */
 
     float **attn_norm, **attn_q, **attn_k, **attn_v, **attn_o, **ffn_norm; /* [L] */
+    float **attn_q_b, **attn_k_b, **attn_v_b;   /* [L] QKV bias（qwen2moe） */
     float **router;                 /* [L] n_embd * n_expert */
     float ***ffn_gate, ***ffn_up, ***ffn_down;  /* [L][E] */
     float **df_gate, **df_up, **df_down;        /* [L] 稠密路径 */
+    float **exps;                   /* [L] 3D exps 原始缓冲(n_embd*exp_ffn*E)，供 ffn_*[L][E] 切片 */
+    float **sh_gate, **sh_up, **sh_down;        /* [L] 共享专家（qwen2moe） */
+    float **sh_gate_inp;            /* [L] n_embd 共享门（qwen2moe, 原 BF16） */
 
     float **cos_cache, **sin_cache;  /* [max_seq][head_dim/2] */
 

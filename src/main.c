@@ -42,14 +42,14 @@ static int has_gguf_magic(const char *path) {
     return (n == 4 && memcmp(b, m, 4) == 0);
 }
 
-/* 判断是否为 llama 架构 GGUF（存在 llama.block_count 元数据；.pap 导出的是 pap.* 前缀） */
+/* 判断是否为可跑的 llama 家族架构 GGUF（llama / qwen2moe，均可由 llama_load 加载） */
 static int is_llama_gguf(const char *path) {
     Gguf g;
     if (gguf_open(&g, path) != 0) return 0;
-    uint32_t bc = 0;
-    int r = gguf_meta_u32(&g, "llama.block_count", &bc);
+    char arch[64] = "";
+    gguf_meta_string(&g, "general.architecture", arch, sizeof(arch));
     gguf_close(&g);
-    return r;
+    return (strcmp(arch, "llama") == 0 || strcmp(arch, "qwen2moe") == 0);
 }
 
 /* 读取 GGUF 的 general.architecture（如 llama / qwen2），未读到返回 0 */
