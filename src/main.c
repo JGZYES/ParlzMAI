@@ -9,6 +9,7 @@
 #include "infer/sample.h"
 #include "model/gguf.h"
 #include "model/model.h"
+#include "utils/portable.h"
 #include "model/llama.h"
 #ifdef MOE_HTTP
 #include "server/api.h"
@@ -282,7 +283,7 @@ int main(int argc, char **argv) {
     }
 
     if (chat) {
-        mkdir("output", 0755);
+        mo_makedirs("output");
         char outpath[512];
         if (output) snprintf(outpath, sizeof(outpath), "%s", output);
         else snprintf(outpath, sizeof(outpath), "output/chat-%ld.txt", (long)time(NULL));
@@ -326,7 +327,7 @@ int main(int argc, char **argv) {
     }
 
     if (interactive) {
-        mkdir("output", 0755);
+        mo_makedirs("output");
         char outpath[512];
         if (output) snprintf(outpath, sizeof(outpath), "%s", output);
         else snprintf(outpath, sizeof(outpath), "output/chat-%ld.txt", (long)time(NULL));
@@ -353,7 +354,7 @@ int main(int argc, char **argv) {
     }
 
     if (output) {
-        mkdir("output", 0755);
+        mo_makedirs("output");
         char *out = moe_generate_text(&m, prompt, n_tokens, temperature, top_k);
         int rc = write_text_file(output, out ? out : "");
         MO_LOGI("生成已写入 %s (%s)", output, rc == 0 ? "ok" : "fail");

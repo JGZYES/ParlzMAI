@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <time.h>
+#include "utils/portable.h"
 
 static MoLogLevel g_level = MO_LOG_INFO;
 static int g_timestamps = 1;
@@ -30,7 +31,7 @@ void mo_log_msg(MoLogLevel level, const char *fmt, ...) {
         time_t t = time(NULL);
         struct tm tm_buf;
         char ts[32];
-        localtime_r(&t, &tm_buf); /* POSIX；Linux/glibc 下可用 */
+        mo_localtime_r(&t, &tm_buf); /* POSIX；Windows 走 localtime_s 桥接 */
         strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_buf);
         fprintf(out, "%s [%5s] ", ts, level_name(level));
     } else {

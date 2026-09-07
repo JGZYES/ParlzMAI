@@ -1,8 +1,10 @@
 # 构建/产物
 build/
 build-asan/
+build-win/
 dist/
 output/
+releases/
 
 # WSL 发行版镜像（大）
 wsl/

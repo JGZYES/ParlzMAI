@@ -1,6 +1,7 @@
 #include "utils/mempool.h"
 
 #include <stdlib.h>
+#include "utils/portable.h"
 
 #define MO_DEFAULT_BLOCK_SIZE (64u * 1024u)
 #define MO_ALIGN 64u
@@ -22,7 +23,7 @@ static MoMemPoolBlock *new_block(size_t min_cap, size_t block_size) {
     size_t cap = align_up(min_cap > block_size ? min_cap : block_size, MO_ALIGN);
     MoMemPoolBlock *b = calloc(1, sizeof(MoMemPoolBlock));
     if (!b) return NULL;
-    int rc = posix_memalign((void **)&b->base, MO_ALIGN, cap);
+    int rc = mo_posix_memalign((void **)&b->base, MO_ALIGN, cap);
     if (rc != 0) {
         free(b);
         return NULL;
@@ -68,7 +69,7 @@ void mempool_destroy(MoMemPool *pool) {
     MoMemPoolBlock *b = pool->blocks;
     while (b) {
         MoMemPoolBlock *next = b->next;
-        free(b->base);
+        mo_aligned_free(b->base);
         free(b);
         b = next;
     }

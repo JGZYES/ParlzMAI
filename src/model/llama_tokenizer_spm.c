@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "utils/portable.h"
 
 /* ---- GPT-2 byte_to_unicode（与 llama_tokenizer.c 相同）---- */
 static void build_b2u(char b2u[256][5], int code2byte[512]) {
@@ -61,7 +62,7 @@ int llmtok_spm_init(LlamaTokenizerSPM *t, char **tokens, int vocab_size, float *
     }
     t->sort_idx = malloc((size_t)vocab_size * sizeof(int));
     for (int i = 0; i < vocab_size; i++) t->sort_idx[i] = i;
-    qsort_r(t->sort_idx, (size_t)vocab_size, sizeof(int), cmp_idx, t->tokens);
+    mo_qsort_r(t->sort_idx, (size_t)vocab_size, sizeof(int), cmp_idx, t->tokens);
     t->scores = malloc((size_t)vocab_size * sizeof(float));
     for (int i = 0; i < vocab_size; i++) t->scores[i] = scores ? scores[i] : 0.0f;
     return 0;
