@@ -95,10 +95,9 @@ ctest --test-dir build                 # 单元测试
 ```
 
 ## Git 仓库
-- ✅ **GitHub**：`git push -u origin main` 成功（`origin=https://github.com/JGZYES/ParlzMAI.git`），本地 HEAD == origin/main。
-  （用 `gh auth token` → `credential.helper=store`，并 `git config --global http.version HTTP/1.1` 避开 HTTP/2 帧错误。）
-- ⚠️ **parlz**（`https://git.parlz.com/JGZ_YES/ParlzMAI.git`）：SSH(22) 端口在本机**网络不可达**（443 可达），SSH 密钥已加到 Gitea 但 22 连不上；需 **HTTPS 凭据**推送：
-  `git push https://<TOKEN>@git.parlz.com/JGZ_YES/ParlzMAI.git main`
+- ✅ **GitHub**：`main = 95a3339`（`origin=https://github.com/JGZYES/ParlzMAI.git`，用 `gh auth token` + `credential.helper=store`，`http.version HTTP/1.1`）。
+- ✅ **Gitee**：`gitee=https://gitee.com/JGZYES/pmai.git`，`main = master = 95a3339`（oauth2:token 认证）。
+- ⚠️ **parlz**（`git.parlz.com`）：SSH(22) 本机网络不可达（443 可达）；需 **HTTPS 凭据**推送：`git push https://<TOKEN>@git.parlz.com/JGZ_YES/ParlzMAI.git main`
 
 ---
 
@@ -116,7 +115,8 @@ ctest --test-dir build                 # 单元测试
 - ✅ **GPT-MoE 前向**：RMSNorm、带 KV Cache 注意力、MoE(router+Top-K+专家加权)、GFU FFN。
 - ✅ **llama/Mixtral 架构**：RoPE(NeoX) + GQA + SwiGLU + Mixtral MoE(重归一化 Top-k) —— **C 与 PyTorch 贪心逐 token 一致（`[MATCH] YES`）**。
 - ✅ **byte-level BPE**（GPT/自研两端一致）与 **GPT-2 byte-level BPE 分词器**（`platform/llama_tokenizer.py`，**与 llama-cpp-python 逐 token MATCH，含中文**）。
-- ✅ **`.pap` 加载器**（多 dtype f32/fp16/q8 反量化）；**GGUF 加载器**（容器解析、元数据查询、F32/F16/BF16/Q4_0/Q5_0/Q5_1/Q8_0 反量化）。
+- ✅ **`.pap` 加载器**（多 dtype f32/fp16/q8 反量化）；**GGUF 加载器**（容器解析、元数据查询、F32/F16/BF16/Q4_0/Q5_0/Q5_1/Q8_0 反量化，**并写入 Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K 反量化，Q6_K 公式已与 llama.cpp 逐字参考一致**）。
+- ✅ **`mmap` 模型加载**（`.pap` 用 `mmap` 按需分页，不再整块拷贝；实测生成正常）。
 - ✅ **真实 GGUF 兼容**：**顺序探测**（元数据/张量在前）+ **版本自适应**（v1 用 u32、v2+ 用 u64）。
 - ✅ 采样（top-k/temperature）+ 自回归生成。
 
