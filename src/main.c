@@ -92,6 +92,99 @@ static void llama_emit(LlamaModel *m, const char *prompt, int n_new, float temp,
     printf("\n");
 }
 
+/* 把一段文本 tokenize 后追加到 ids（chat 模板文本段） */
+static size_t append_text(LlamaModel *m, int *ids, size_t n, size_t max, const char *text) {
+    int tmp[256];
+    int k = llama_tokenize(m, text, tmp, 256);
+    for (int i = 0; i < k && n < max; i++) ids[n++] = tmp[i];
+    return n;
+}
+
+/* 检测是否 ChatML 模型（含 <|im_start|>/<|im_end|> 标记） */
+static int llama_is_chatml(const LlamaModel *m) {
+    return llama_find_token(m, "<|im_start|>") >= 0 && llama_find_token(m, "<|im_end|>") >= 0;
+}
+
+/* llama 聊天：带对话历史的多轮交互。每轮把整段 prompt 重编码并生成。
+   ChatML 模型用 <|im_start|>/<|im_end|> 模板（seq 存历史 token 序列）；否则用 "User:/Assistant:" 文本历史。
+   记录保存到 output/chat-*.txt。 */
+static void llama_chat(LlamaModel *m, int n_new, float temp, int top_k) {
+    mo_makedirs("output");
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "output/chat-%ld.txt", (long)time(NULL));
+    FILE *logf = fopen(outpath, "wb");
+    if (logf) fprintf(logf, "# pmai llama 聊天记录\n\n");
+    MO_LOGI("聊天模式已启动。输入内容即对话；exit/quit 退出。记录保存到 %s", outpath);
+
+    int chatml = llama_is_chatml(m);
+    int im_s = chatml ? llama_find_token(m, "<|im_start|>") : -1;
+    int im_e = chatml ? llama_find_token(m, "<|im_end|>") : -1;
+
+    /* 历史：ChatML 存 token 序列（以系统消息开头）；回退存文本 */
+    int seq[4096]; size_t sn = 0;
+    char hist[16384] = ""; size_t hlen = 0;
+    if (chatml) {
+        if (m->c.bos_id >= 0 && sn < 4096) seq[sn++] = m->c.bos_id;
+        if (im_s >= 0 && sn < 4096) seq[sn++] = im_s;
+        sn = append_text(m, seq, sn, 4096, "system\nYou are a helpful assistant.");
+        if (im_e >= 0 && sn < 4096) seq[sn++] = im_e;
+    }
+
+    char line[4096];
+    for (;;) {
+        printf("\n你: "); fflush(stdout);
+        if (!fgets(line, sizeof(line), stdin)) break;
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+        if (!len) continue;
+        if (!strcmp(line, "exit") || !strcmp(line, "quit")) break;
+
+        int ids[2048]; size_t n = 0;
+        if (chatml) {
+            if (m->c.bos_id >= 0 && n < 2048) ids[n++] = m->c.bos_id;
+            for (size_t i = 0; i < sn && n < 2048; i++) ids[n++] = seq[i];
+            if (im_s >= 0 && n < 2048) ids[n++] = im_s;
+            n = append_text(m, ids, n, 2048, "user\n");
+            n = append_text(m, ids, n, 2048, line);
+            if (im_e >= 0 && n < 2048) ids[n++] = im_e;
+            if (im_s >= 0 && n < 2048) ids[n++] = im_s;
+            n = append_text(m, ids, n, 2048, "assistant\n");
+        } else {
+            char prompt[16800];
+            snprintf(prompt, sizeof(prompt), "%sUser: %s\nAssistant:", hist, line);
+            if (m->c.bos_id >= 0 && n < 2048) ids[n++] = m->c.bos_id;
+            n = append_text(m, ids, n, 2048, prompt);
+        }
+        if (n == 0) ids[n++] = m->c.bos_id >= 0 ? m->c.bos_id : 1;
+
+        int out[512];
+        int p = llama_generate(m, ids, (int)n, n_new, temp, top_k, out);
+        char reply[4096];
+        int rl = llama_detokenize(m, out, p, reply, sizeof(reply));
+        if (rl < 0) rl = 0;
+        printf("%.*s\n", rl, reply);
+        fflush(stdout);   /* stdout 管道/文件下是全缓冲，需即时刷出，否则被杀进程会丢回复 */
+
+        /* 回填历史 */
+        if (chatml) {
+            if (im_s >= 0 && sn < 4096) seq[sn++] = im_s;
+            sn = append_text(m, seq, sn, 4096, "user\n");
+            sn = append_text(m, seq, sn, 4096, line);
+            if (im_e >= 0 && sn < 4096) seq[sn++] = im_e;
+            if (im_s >= 0 && sn < 4096) seq[sn++] = im_s;
+            sn = append_text(m, seq, sn, 4096, "assistant\n");
+            for (int i = 0; i < p && sn < 4096; i++) seq[sn++] = out[i];
+            if (im_e >= 0 && sn < 4096) seq[sn++] = im_e;
+        } else {
+            int add = snprintf(hist + hlen, sizeof(hist) - hlen, "User: %s\nAssistant: %.*s\n", line, rl, reply);
+            if (add > 0) hlen += (size_t)add;
+            if (hlen > sizeof(hist) - 4096) { size_t keep = 8192; memmove(hist, hist + hlen - keep, keep + 1); hlen = keep; }
+        }
+        if (logf) { fprintf(logf, "User: %s\nAssistant: %.*s\n\n", line, rl, reply); fflush(logf); }
+    }
+    if (logf) fclose(logf);
+}
+
 static int arg_i(const char *s, int def) { return s ? atoi(s) : def; }
 static float arg_f(const char *s, float def) { return s ? (float)atof(s) : def; }
 
@@ -225,7 +318,9 @@ int main(int argc, char **argv) {
             llama_free(&lm);
             return 2;
         }
-        if (interactive) {
+        if (chat) {
+            llama_chat(&lm, n_tokens, temperature, top_k);
+        } else if (interactive) {
             char line[4096];
             for (;;) {
                 printf("\n>> ");

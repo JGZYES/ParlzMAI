@@ -57,6 +57,8 @@ int64_t llama_param_count(const LlamaModel *m);
 /* 文本 <-> token id（若模型带分词器）。返回 token 数/字节数，负为错 */
 int llama_tokenize(const LlamaModel *m, const char *text, int *ids, int max);
 int llama_detokenize(const LlamaModel *m, const int *ids, int n, char *out, int max);
+/* 按 token 字符串精确查找 id（chat 模板特殊标记）。未命中返回 -1 */
+int llama_find_token(const LlamaModel *m, const char *s);
 
 /* 输入嵌入：x = token_embd[token]（RoPE 在 forward 内处理位置） */
 void llama_embed(const LlamaModel *m, int token, float *x);

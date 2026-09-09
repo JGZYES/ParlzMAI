@@ -177,3 +177,11 @@ int llmtok_spm_decode(const LlamaTokenizerSPM *t, const int *ids, int n, char *o
     if (w < max) out[w] = '\0'; else out[max - 1] = '\0';
     return w;
 }
+
+/* 公开：按 token 字符串精确查找 id（chat 模板特殊标记）。未命中返回 -1 */
+int llmtok_spm_find(const LlamaTokenizerSPM *t, const char *s) {
+    if (!t || !s) return -1;
+    for (int i = 0; i < t->vocab_size; i++)
+        if (t->tokens[i] && strcmp(t->tokens[i], s) == 0) return i;
+    return -1;
+}

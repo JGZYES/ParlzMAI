@@ -23,6 +23,8 @@ void llmtok_free(LlamaTokenizer *t);
 int llmtok_encode(const LlamaTokenizer *t, const char *text, int *out, int max);
 /* 解码：ids -> utf-8（最多 max 字节）。返回字节数。 */
 int llmtok_decode(const LlamaTokenizer *t, const int *ids, int n, char *out, int max);
+/* 按 token 字符串精确查找 id（chat 模板特殊标记）。未命中返回 -1 */
+int llmtok_find(const LlamaTokenizer *t, const char *s);
 
 #ifdef __cplusplus
 }

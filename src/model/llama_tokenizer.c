@@ -50,6 +50,12 @@ static int lookup(const LlamaTokenizer *t, const char *s) {
     return -1;
 }
 
+/* 公开：按 token 字符串精确查找 id（用于 chat 模板特殊标记，如 <|im_start|>）。未命中返回 -1 */
+int llmtok_find(const LlamaTokenizer *t, const char *s) {
+    if (!t || !s) return -1;
+    return lookup(t, s);
+}
+
 static int cmp_idx(const void *a, const void *b, void *arg) {
     char **tokens = (char **)arg;
     const int *ia = (const int *)a, *ib = (const int *)b;

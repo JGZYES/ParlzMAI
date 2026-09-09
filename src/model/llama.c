@@ -536,6 +536,13 @@ int llama_tokenize(const LlamaModel *m, const char *text, int *ids, int max) {
     return (m->tok.vocab_size > 0) ? llmtok_encode(&m->tok, text, ids, max) : -1;
 }
 
+/* 按 token 字符串精确查找 id（chat 模板特殊标记，如 <|im_start|>）。未命中返回 -1 */
+int llama_find_token(const LlamaModel *m, const char *s) {
+    if (!m->is_loaded || !s) return -1;
+    if (m->is_spm) return (m->spm_tok.vocab_size > 0) ? llmtok_spm_find(&m->spm_tok, s) : -1;
+    return (m->tok.vocab_size > 0) ? llmtok_find(&m->tok, s) : -1;
+}
+
 int llama_detokenize(const LlamaModel *m, const int *ids, int n, char *out, int max) {
     if (!m->is_loaded) return -1;
     if (m->is_spm) return (m->spm_tok.vocab_size > 0) ? llmtok_spm_decode(&m->spm_tok, ids, n, out, max) : -1;

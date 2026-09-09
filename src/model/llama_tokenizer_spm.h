@@ -17,6 +17,8 @@ int llmtok_spm_init(LlamaTokenizerSPM *t, char **tokens, int vocab_size, float *
 void llmtok_spm_free(LlamaTokenizerSPM *t);
 int llmtok_spm_encode(const LlamaTokenizerSPM *t, const char *text, int *out, int max);
 int llmtok_spm_decode(const LlamaTokenizerSPM *t, const int *ids, int n, char *out, int max);
+/* 按 token 字符串精确查找 id（chat 模板特殊标记）。未命中返回 -1 */
+int llmtok_spm_find(const LlamaTokenizerSPM *t, const char *s);
 
 #ifdef __cplusplus
 }
