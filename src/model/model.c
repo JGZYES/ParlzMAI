@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "utils/portable.h"
 
 #ifdef _WIN32
 /* Windows：无 mmap，退化为读整文件到内存（mmap 只是加载优化，不影响正确性） */
@@ -12,7 +13,7 @@
 static unsigned char *mo_map_file(const char *path, size_t *out_sz) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    int64_t n = mo_file_size(f);   /* 64 位，避免 Windows long(32 位) 对 >2GB 溢出 */
     if (n <= 0) { fclose(f); return NULL; }
     unsigned char *b = malloc((size_t)n);
     if (!b) { fclose(f); return NULL; }

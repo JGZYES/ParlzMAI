@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <time.h>
 #include <string.h>
 
@@ -44,6 +45,15 @@ static inline void mo_qsort_r(void *base, size_t n, size_t sz,
 #include <direct.h>
 static inline int mo_makedirs(const char *p) { return _mkdir(p); }
 
+/* 文件大小(64 位)。Windows 的 long 是 32 位，ftell 对 >2GB 文件会溢出，必须用 _ftelli64 */
+#include <stdio.h>
+static inline int64_t mo_file_size(FILE *f) {
+    _fseeki64(f, 0, SEEK_END);
+    int64_t n = _ftelli64(f);
+    _fseeki64(f, 0, SEEK_SET);
+    return n;
+}
+
 #else
 #define mo_posix_memalign posix_memalign
 #define mo_aligned_free  free
@@ -51,6 +61,12 @@ static inline int mo_makedirs(const char *p) { return _mkdir(p); }
 #define mo_qsort_r       qsort_r
 #include <sys/stat.h>
 #define mo_makedirs(p)   mkdir((p), 0755)
+static inline int64_t mo_file_size(FILE *f) {
+    if (fseek(f, 0, SEEK_END) != 0) return -1;
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    return (int64_t)n;
+}
 #endif
 
 #endif /* MO_PORTABLE_H */

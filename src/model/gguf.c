@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
+#include "utils/portable.h"
 
 /* ---- ggml_type 枚举（常用） ---- */
 #define GGML_F32 0
@@ -386,13 +387,12 @@ int gguf_open(Gguf *g, const char *path) {
     memset(g, 0, sizeof(*g));
     FILE *fh = fopen(path, "rb");
     if (!fh) return -1;
-    fseek(fh, 0, SEEK_END);
-    long sz = ftell(fh);
-    fseek(fh, 0, SEEK_SET);
-    if (sz <= 0) { fclose(fh); return -2; }
-    unsigned char *buf = malloc((size_t)sz);
+    int64_t sz64 = mo_file_size(fh);
+    if (sz64 <= 0) { fclose(fh); return -2; }
+    size_t sz = (size_t)sz64;
+    unsigned char *buf = malloc(sz);
     if (!buf) { fclose(fh); return -3; }
-    if (fread(buf, 1, (size_t)sz, fh) != (size_t)sz) { free(buf); fclose(fh); return -4; }
+    if (fread(buf, 1, sz, fh) != sz) { free(buf); fclose(fh); return -4; }
     fclose(fh);
 
     if (sz < 24) { free(buf); return -5; }
