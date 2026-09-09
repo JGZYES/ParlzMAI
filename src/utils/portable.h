@@ -54,6 +54,16 @@ static inline int64_t mo_file_size(FILE *f) {
     return n;
 }
 
+/* 让控制台按 UTF-8 解释输出：cmd/PowerShell 默认 GBK(936)，程序输出的是 UTF-8 字节
+   若不设置，中文会显示成 "鍔犺浇" 这类乱码。仅在真有控制台时生效，管道/重定向无影响。 */
+#include <windows.h>
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+static inline void mo_set_console_utf8(void) {
+    SetConsoleOutputCP(65001);   /* CP_UTF8 */
+    SetConsoleCP(65001);
+}
+
 #else
 #define mo_posix_memalign posix_memalign
 #define mo_aligned_free  free
@@ -67,6 +77,7 @@ static inline int64_t mo_file_size(FILE *f) {
     fseek(f, 0, SEEK_SET);
     return (int64_t)n;
 }
+static inline void mo_set_console_utf8(void) {}
 #endif
 
 #endif /* MO_PORTABLE_H */

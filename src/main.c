@@ -152,6 +152,7 @@ static char *run_chat(Model *m, const char *prompt, int max_new, float temperatu
 }
 
 int main(int argc, char **argv) {
+    mo_set_console_utf8();   /* 控制台按 UTF-8 显示，避免中文乱码 */
     const char *model = NULL, *prompt = NULL, *loglvl = NULL, *inspect = NULL;
     int n_tokens = 100;
     float temperature = 0.8f;

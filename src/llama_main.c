@@ -3,8 +3,10 @@
 #include <string.h>
 
 #include "model/llama.h"
+#include "utils/portable.h"
 
 int main(int argc, char **argv) {
+    mo_set_console_utf8();   /* 控制台按 UTF-8 显示，避免中文乱码 */
     if (argc < 2) {
         fprintf(stderr, "用法: pmai-llama <model.gguf> [n_new] [prompt 或 init_id ...]\n");
         return 1;
